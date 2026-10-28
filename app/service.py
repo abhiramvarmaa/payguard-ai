@@ -8,8 +8,9 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from app.ai.investigator import LLMClient, PROMPT_VERSION, investigate
-from app.cases import INITIAL_STATUS, record_audit, transition
+from app.cases import FINAL_STATUSES, INITIAL_STATUS, record_audit, transition
 from app.db import AiRunRow, CaseRow, PaymentEventRow
+from app.notifier import enqueue_case_notification
 from app.router import decide
 from app.schemas import PaymentFailureEvent, Route
 
@@ -70,6 +71,8 @@ def process_event(session: Session, event: PaymentFailureEvent, ai_enabled: bool
     record_audit(session, case.case_id, "system", "CASE_CREATED",
                  {"route": case.route, "rule_id": case.rule_id, "rule_version": case.rule_version},
                  correlation_id)
+    if case.status in FINAL_STATUSES:
+        enqueue_case_notification(session, case)
 
     # Persist the decision BEFORE any slow or risky step, so nothing is lost if that step fails.
     try:

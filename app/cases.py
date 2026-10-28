@@ -2,6 +2,7 @@
 from sqlalchemy.orm import Session
 
 from app.db import AuditEventRow, CaseRow, utcnow
+from app.notifier import enqueue_case_notification
 from app.schemas import Route
 
 INITIAL_STATUS = {
@@ -16,6 +17,9 @@ ALLOWED_TRANSITIONS: dict[str, set[str]] = {
     "REVIEW_PENDING": {"APPROVED", "REJECTED"},
     "EXCEPTION_PENDING": {"RESOLVED"},
 }
+
+# The merchant is told about a case once it reaches one of these.
+FINAL_STATUSES = {"RULE_COMPLETE", "APPROVED", "REJECTED", "RESOLVED"}
 
 
 class InvalidTransition(Exception):
@@ -37,3 +41,5 @@ def transition(session: Session, case: CaseRow, new_status: str, actor: str,
     case.updated_at = utcnow()
     record_audit(session, case.case_id, actor, f"STATUS_{old_status}_TO_{new_status}",
                  detail, correlation_id)
+    if new_status in FINAL_STATUSES:
+        enqueue_case_notification(session, case)

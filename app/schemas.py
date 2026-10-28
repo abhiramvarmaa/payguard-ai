@@ -76,6 +76,19 @@ class AiRunOut(BaseModel):
     latency_ms: int
 
 
+class NotificationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    notification_id: str
+    case_id: str
+    merchant_id: str
+    status: str
+    attempts: int
+    next_attempt_at: datetime
+    last_error: str | None
+    payload: dict
+
+
 class CaseDetail(CaseOut):
     audit_trail: list[AuditOut]
     ai_runs: list[AiRunOut]

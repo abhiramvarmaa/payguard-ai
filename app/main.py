@@ -12,20 +12,24 @@ from app.ai.investigator import LLMClient, MockLLM
 from app.auth import Principal, can_access, get_principal, require_analyst
 from app.cases import InvalidTransition, transition
 from app.config import Settings, load_settings
-from app.db import AiRunRow, AuditEventRow, CaseRow, make_session_factory
-from app.schemas import AiRunOut, AuditOut, CaseDetail, CaseOut, PaymentFailureEvent, ReviewRequest
+from app.db import AiRunRow, AuditEventRow, CaseRow, NotificationRow, make_session_factory
+from app.notifier import HttpxSender, WebhookSender, deliver_due, requeue
+from app.schemas import (AiRunOut, AuditOut, CaseDetail, CaseOut, NotificationOut, PaymentFailureEvent,
+                         ReviewRequest)
 from app.service import IdempotencyConflict, process_event
 
 logger = logging.getLogger("payguard")
 
 
-def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -> FastAPI:
+def create_app(settings: Settings | None = None, llm: LLMClient | None = None,
+               webhook_sender: WebhookSender | None = None) -> FastAPI:
     settings = settings or load_settings()
     llm = llm or MockLLM()
+    webhook_sender = webhook_sender or HttpxSender()
     session_factory = make_session_factory(settings.database_url)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    app = FastAPI(title="PayGuard AI", version="0.2.0")
+    app = FastAPI(title="PayGuard AI", version="0.3.0")
 
     @app.middleware("http")
     async def correlation_id_middleware(request: Request, call_next):
@@ -119,5 +123,32 @@ def create_app(settings: Settings | None = None, llm: LLMClient | None = None) -
                 principal: Principal = Depends(require_analyst),
                 session: Session = Depends(get_session)) -> CaseRow:
         return review(case_id, "RESOLVED", body, request, principal, session)
+
+    @app.get("/v1/notifications", response_model=list[NotificationOut])
+    def list_notifications(status: str | None = None,
+                           principal: Principal = Depends(require_analyst),
+                           session: Session = Depends(get_session)) -> list[NotificationRow]:
+        query = select(NotificationRow).order_by(NotificationRow.created_at.desc())
+        if status:
+            query = query.where(NotificationRow.status == status)
+        return list(session.scalars(query))
+
+    @app.post("/v1/notifications/dispatch")
+    def dispatch_notifications(principal: Principal = Depends(require_analyst),
+                               session: Session = Depends(get_session)) -> dict[str, int]:
+        # Normally app/worker.py does this on a timer; this endpoint triggers one run by hand.
+        return deliver_due(session, webhook_sender)
+
+    @app.post("/v1/notifications/{notification_id}/retry", response_model=NotificationOut)
+    def retry_notification(notification_id: str,
+                           principal: Principal = Depends(require_analyst),
+                           session: Session = Depends(get_session)) -> NotificationRow:
+        notification = session.get(NotificationRow, notification_id)
+        if notification is None:
+            raise HTTPException(status_code=404, detail="Notification not found")
+        if notification.status != "DEAD_LETTER":
+            raise HTTPException(status_code=409, detail="Only dead-lettered notifications can be retried")
+        requeue(session, notification)
+        return notification
 
     return app

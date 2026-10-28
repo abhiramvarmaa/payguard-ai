@@ -16,9 +16,16 @@ All data is synthetic. The gateway codes (`V51`, `M54`, ...) are made up and are
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python -m pytest -q                               # 20 tests
+python -m pytest -q                               # 33 tests
 uvicorn --factory app.main:create_app --reload    # http://127.0.0.1:8000/docs
 python simulator.py                               # in a second terminal
+```
+
+To watch webhooks arrive, also run the fake merchant and the delivery worker:
+
+```bash
+uvicorn merchant_receiver:app --port 9000         # terminal 3: prints each webhook
+python -m app.worker                              # terminal 4: delivers every 5 seconds
 ```
 
 Or with Docker:
@@ -37,13 +44,16 @@ docker run -p 8000:8000 payguard-ai
 | `GET` | `/v1/cases?status=` | merchant (own cases) or analyst (all) |
 | `GET` | `/v1/cases/{id}` | same; includes audit trail and AI trajectory |
 | `POST` | `/v1/cases/{id}/approve` · `/reject` · `/resolve` | analyst |
+| `GET` | `/v1/notifications?status=` | analyst |
+| `POST` | `/v1/notifications/dispatch` | analyst (one delivery run by hand) |
+| `POST` | `/v1/notifications/{id}/retry` | analyst (requeue a dead letter) |
 
 Demo API keys (header `X-API-Key`): `merchant-demo-key`, `merchant-other-key`, `analyst-key`.
 
 ## What is built vs planned
 
-**Built:** validation, gateway normalisation, versioned rules with priority and conflict detection, three-way routing, SQLite/PostgreSQL persistence, idempotency (with a check for reused IDs that carry a different payload), API-key auth with merchant isolation, a case state machine, an audit trail, AI investigation with allowlisted tools, keyword-based policy retrieval, output guardrails, a forced human approval step, AI run logging (steps, tokens, latency), correlation IDs, 20 tests, Docker and GitHub Actions CI.
+**Built:** validation, gateway normalisation, versioned rules with priority and conflict detection, three-way routing, SQLite/PostgreSQL persistence, idempotency (with a check for reused IDs that carry a different payload), API-key auth with merchant isolation, a case state machine, an audit trail, AI investigation with allowlisted tools, keyword-based policy retrieval, output guardrails, a forced human approval step, AI run logging (steps, tokens, latency), correlation IDs, merchant webhooks (outbox pattern, exponential backoff, dead-letter queue, idempotency keys, a background worker), 33 tests, Docker and GitHub Actions CI.
 
-**Planned:** async queue and workers with a dead-letter queue, webhook notifications, a real LLM adapter, embedding-based retrieval (pgvector), a React dashboard, database migrations (Alembic), and an AWS deployment (ECS, RDS, SQS) with Terraform.
+**Planned:** moving AI review onto a queue (SQS/Redis) with `202 Accepted`, webhook signing (HMAC), a real LLM adapter, embedding-based retrieval (pgvector), a React dashboard, database migrations (Alembic), and an AWS deployment (ECS, RDS, SQS) with Terraform.
 
 The full walkthrough is in [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md).
