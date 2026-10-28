@@ -13,6 +13,12 @@ def test_normalizer_maps_each_gateway_and_keeps_unknown_codes_safe():
     assert normalize(Gateway.SIMULATOR_MASTERCARD, "V54") == UNKNOWN
 
 
+def test_exceeds_limit_is_handled_by_a_rule():
+    decision = decide(PaymentFailureEvent(**make_event(raw_code="V61")), ai_enabled=True)
+    assert (decision.route, decision.action) == (Route.DETERMINISTIC, "NOTIFY_MERCHANT")
+    assert decision.rule_id == "rule-exceeds-limit"
+
+
 def test_conflicting_top_priority_rules_are_not_picked_arbitrarily():
     rules = (
         Rule("a", 1, "EXPIRED_CARD", 10, "REQUEST_CARD_UPDATE", "x"),

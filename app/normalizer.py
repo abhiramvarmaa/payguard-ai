@@ -10,6 +10,7 @@ GATEWAY_CODE_MAPS: dict[Gateway, dict[str, str]] = {
     Gateway.SIMULATOR_VISA: {
         "V51": "INSUFFICIENT_FUNDS",
         "V54": "EXPIRED_CARD",
+        "V61": "EXCEEDS_LIMIT",
         "V91": "GATEWAY_TIMEOUT",
     },
     Gateway.SIMULATOR_MASTERCARD: {

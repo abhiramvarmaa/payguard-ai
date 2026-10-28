@@ -17,6 +17,8 @@ RULES: tuple[Rule, ...] = (
          "NOTIFY_MERCHANT", "Ask the customer to use another payment method"),
     Rule("rule-expired-card", 3, "EXPIRED_CARD", 20,
          "REQUEST_CARD_UPDATE", "Request updated card information"),
+    Rule("rule-exceeds-limit", 1, "EXCEEDS_LIMIT", 30,
+         "NOTIFY_MERCHANT", "Amount exceeds the card limit; ask the customer for another method"),
 )
 
 
