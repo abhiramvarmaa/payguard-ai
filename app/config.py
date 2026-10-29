@@ -10,6 +10,12 @@ DEMO_API_KEYS = {
 }
 
 
+# Where each merchant wants case updates delivered. Merchants without an entry get no webhooks.
+MERCHANT_WEBHOOKS = {
+    "merchant-demo": "http://127.0.0.1:9000/webhooks",
+}
+
+
 @dataclass(frozen=True)
 class Settings:
     database_url: str

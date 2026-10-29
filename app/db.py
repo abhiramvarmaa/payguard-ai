@@ -72,6 +72,23 @@ class AiRunRow(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class NotificationRow(Base):
+    """Outbox: written in the same transaction as the case change, delivered later."""
+
+    __tablename__ = "notifications"
+
+    notification_id: Mapped[str] = mapped_column(String(32), primary_key=True)
+    case_id: Mapped[str] = mapped_column(ForeignKey("cases.case_id"), index=True)
+    merchant_id: Mapped[str] = mapped_column(String(64))
+    url: Mapped[str] = mapped_column(String(500))
+    payload: Mapped[dict] = mapped_column(JSON)
+    status: Mapped[str] = mapped_column(String(16), index=True)  # PENDING, DELIVERED, DEAD_LETTER
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
+    next_attempt_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_error: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 def make_session_factory(database_url: str) -> sessionmaker:
     connect_args = {"check_same_thread": False} if database_url.startswith("sqlite") else {}
     engine = create_engine(database_url, connect_args=connect_args)

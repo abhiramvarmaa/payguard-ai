@@ -61,7 +61,7 @@ payguard-ai/
 │   └── ai/
 │       ├── policies.py    policy documents + retriever (RAG)
 │       └── investigator.py  tools, LLM call, guardrails
-├── tests/                 20 automated tests
+├── tests/                 33 automated tests
 ├── simulator.py           fake payment gateway that sends events
 ├── Dockerfile             package the app as a container
 └── .github/workflows/ci.yml   run tests on every push
@@ -1219,11 +1219,133 @@ That honesty is a **strength**. You can open the code and prove every line, whic
 
 | Phase | Add | You'll learn |
 |---|---|---|
-| 3 | Redis/SQS queue + worker, `202 Accepted`, dead-letter queue | Async processing, retries |
-| 3 | Webhook notifier with retries + backoff | Side effects, at-least-once delivery |
+| 3 | Move AI review to a Redis/SQS queue, return `202 Accepted` | Async processing |
+| ✅ 3 | Webhook notifier with retries + backoff (done, see Part 18) | Side effects, at-least-once delivery |
 | 4 | Real LLM adapter (implement `LLMClient`) + a labeled eval set | Prompting, evals, cost |
 | 5 | Embeddings + pgvector instead of keyword search | Real RAG |
 | 7 | Alembic migrations, PostgreSQL in Docker Compose | Schema changes |
 | 7 | React dashboard for analysts | Frontend + API integration |
 | 7 | AWS: ECS Fargate, RDS, SQS, Secrets Manager, Terraform | Cloud deployment |
 | 7 | Ruff + mypy + coverage in CI | Quality gates |
+
+---
+
+## Part 18: Webhook notifications (`app/notifier.py`, `app/worker.py`)
+
+### Like you're five 🧸
+The robot now has a **postman** 📮.
+1. When a case is finished, the robot writes a letter and drops it in the **outbox** *in the same moment* it writes in its notebook. It can never decide something and forget to write the letter.
+2. The postman takes letters from the outbox and carries them to the shop's address.
+3. If the shop's door is shut, he comes back later: after 30 seconds, then 1 minute, 2 minutes, 4 minutes. Each wait is **double** the last one.
+4. After 5 tries he gives up and puts the letter in the **problem letters box** (the dead-letter queue). A person can look at it and press "try again".
+5. Every letter has a **unique sticker**. If the shop gets the same letter twice, it sees the sticker and ignores the copy.
+
+### The big ideas 🛠️
+
+| Idea | What it means here | Why interviewers care |
+|---|---|---|
+| **Outbox pattern** | The `notifications` row is added in the **same transaction** as the case change | Avoids "saved the case but crashed before sending" (lost message) and "sent but the save failed" (phantom message) |
+| **At-least-once delivery** | We may send a message twice (e.g. crash after sending, before saving "DELIVERED") | Exactly-once over a network is practically impossible, so you design for duplicates |
+| **Idempotency key** | `Idempotency-Key: ntf-...` header; the merchant ignores repeats | Makes at-least-once *safe* |
+| **Exponential backoff** | 30s → 60s → 120s → 240s | Gives a struggling server time to recover instead of hammering it |
+| **Dead-letter queue (DLQ)** | `status = DEAD_LETTER` after 5 tries or a permanent error | Nothing is silently lost; ops can inspect and requeue |
+| **Permanent vs temporary errors** | 4xx: don't retry (our request is wrong). 5xx, timeouts, 429: retry | Retrying a 400 forever just wastes effort |
+| **Data minimisation** | The payload has status, action and reason only. No risk flags, no AI output | The merchant only gets what they need |
+
+### Key lines explained
+
+**`app/db.py` → `NotificationRow`**
+- `status` is `PENDING`, `DELIVERED` or `DEAD_LETTER`. It's indexed because the worker searches by it constantly.
+- `attempts` counts how many times we've tried.
+- `next_attempt_at` is when the worker is allowed to try again. This is how backoff is stored.
+- `last_error` holds why the last try failed (e.g. `"HTTP 503"`), so ops can see it.
+
+**`app/cases.py`**
+```python
+FINAL_STATUSES = {"RULE_COMPLETE", "APPROVED", "REJECTED", "RESOLVED"}
+...
+if new_status in FINAL_STATUSES:
+    enqueue_case_notification(session, case)
+```
+The letter is added to the **same session** as the status change and audit line. One `commit()` saves all three, or none. That's the outbox pattern in two lines. `service.py` does the same for cases that start as `RULE_COMPLETE`.
+
+**`app/notifier.py`**
+```python
+class WebhookSender(Protocol):
+    def send(self, url: str, payload: dict, headers: dict) -> int: ...
+```
+An interface again, the same trick as `LLMClient`. Production uses `HttpxSender` (real HTTP), and tests use `FakeSender`, which returns whatever we script: `503`, then `200`, or raises `ConnectionError`.
+
+```python
+def backoff_delay(attempts: int) -> timedelta:
+    return timedelta(seconds=BASE_DELAY_SECONDS * 2 ** (attempts - 1))
+```
+`2 ** (attempts - 1)` gives 1, 2, 4, 8..., so the delays are 30, 60, 120, 240 seconds. (A production system often adds random **jitter** too, so thousands of retries don't all fire at the same second.)
+
+```python
+due = session.scalars(select(NotificationRow)
+    .where(NotificationRow.status == "PENDING", NotificationRow.next_attempt_at <= now) ...)
+```
+Only letters that are pending **and** whose wait time is over.
+
+```python
+notification.attempts += 1
+try:
+    status_code = sender.send(notification.url, notification.payload,
+                              {"Idempotency-Key": notification.notification_id})
+    error = None if 200 <= status_code < 300 else f"HTTP {status_code}"
+    permanent = 400 <= status_code < 500 and status_code != 429
+except Exception as exc:
+    error = f"{type(exc).__name__}: {exc}"
+    permanent = False
+```
+- We count the attempt **before** sending, so even a crash counts.
+- 2xx is success. Any other code is an error.
+- 4xx (except 429 "Too Many Requests") is **permanent**. Network exceptions are **temporary**.
+
+```python
+if error is None:            → DELIVERED
+elif permanent or attempts >= MAX_ATTEMPTS:  → DEAD_LETTER
+else:                        → stay PENDING, next_attempt_at = now + backoff
+session.commit()
+```
+It commits **after each letter**. If the worker dies halfway through a batch, the ones already delivered stay marked as delivered.
+
+`now: datetime | None = None` lets tests pretend time has passed (`now + 31 seconds`) without actually waiting. That's **injecting the clock**.
+
+**`app/worker.py`** is a loop: every 5 seconds, open a session, call `deliver_due`, and log if anything happened. This is the "background worker" from the blueprint. In AWS it would run as a separate ECS service, or be replaced by SQS + Lambda.
+
+**`main.py`: new endpoints (analyst only)**
+- `GET /v1/notifications?status=DEAD_LETTER` shows what's stuck
+- `POST /v1/notifications/dispatch` runs one delivery round by hand
+- `POST /v1/notifications/{id}/retry` requeues a dead letter. It returns **409** if the letter isn't dead-lettered
+
+**`merchant_receiver.py`** is a fake shop server for demos. It keeps a set of seen `Idempotency-Key`s and ignores repeats. That's exactly what you'd tell a real merchant to do.
+
+### The tests (`tests/test_notifications.py`, 12 tests)
+| Test | Proves |
+|---|---|
+| rule case queued then delivered | Outbox row created; header carries the idempotency key; no internal fields leak; not resent after delivery |
+| AI case after human decision | Nothing is sent while `REVIEW_PENDING`; a letter is queued only after approval |
+| merchant without webhook | No URL configured means no letter |
+| only analysts | Merchants get 403 on the ops endpoints |
+| backoff doubles | 30, 60, 120, 240 |
+| waits for backoff | After a 503, not retried at +29s, retried at +31s |
+| network errors | `ConnectionError` stays PENDING for a retry |
+| max attempts | 5 failures lead to DEAD_LETTER |
+| 400 / 404 / 429 | 4xx is a dead letter immediately; 429 is retried |
+| operator requeue | 400 → DLQ → operator retries → delivered |
+
+### Interview answers this unlocks
+
+**"How do you notify the merchant?"**
+> "When a case reaches a final state, I write a notification to an outbox table in the same database transaction. A background worker delivers it as a webhook with an idempotency key. Failures retry with exponential backoff; 4xx errors and messages that exhaust 5 attempts go to a dead-letter queue that operators can inspect and requeue."
+
+**"What if the merchant's server is down?"**
+> "Delivery retries at 30s, 60s, 120s and 240s, then goes to the DLQ. Nothing is lost, and the case itself is already saved, so the merchant can also poll `GET /v1/cases/{id}`."
+
+**"Can the merchant receive a duplicate?"**
+> "Yes. It's at-least-once by design, because exactly-once over a network isn't realistic. Each message has a stable `Idempotency-Key`, so the merchant can safely ignore repeats."
+
+**"Why not send the webhook directly inside the API request?"**
+> "Because then a slow or failing merchant slows down or breaks our API, and a crash between saving and sending loses the message. The outbox decouples the two."
