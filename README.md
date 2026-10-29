@@ -56,4 +56,4 @@ Demo API keys (header `X-API-Key`): `merchant-demo-key`, `merchant-other-key`, `
 
 **Planned:** moving AI review onto a queue (SQS/Redis) with `202 Accepted`, webhook signing (HMAC), a real LLM adapter, embedding-based retrieval (pgvector), a React dashboard, database migrations (Alembic), and an AWS deployment (ECS, RDS, SQS) with Terraform.
 
-The full walkthrough is in [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md).
+The full walkthrough is in [docs/LEARNING_GUIDE.md](docs/LEARNING_GUIDE.md). How to explain the project in an interview: [docs/INTERVIEW_GUIDE.md](docs/INTERVIEW_GUIDE.md).
